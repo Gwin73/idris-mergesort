@@ -5,15 +5,15 @@ import Data.List.Views as V
 %hide sort
 %default total
 
-lteOrGte : (x, y : Nat) -> Either (LTE x y) (GTE x y)
-lteOrGte Z _ = Left LTEZero
-lteOrGte _ Z = Right LTEZero
-lteOrGte (S k) (S j) with (lteOrGte k j)
-    | (Left ltekj) = Left (LTESucc ltekj) 
-    | (Right gtekj) = Right (LTESucc gtekj)
+interface DecEq a => DecTotOrd a where
+    lte : a -> a -> Type
+    total decLTE : (x : a) -> (y : a) -> Dec (x `lte` y)
+    total antiSym : x `lte` y -> y `lte` x -> x = y
+    total trans : x `lte` y -> y `lte` z -> x `lte` z
+    total connex : (x, y : a) -> Either (x `lte` y) (y `lte` x)
 
-notLTE : Not (LTE x y) -> LTE y x
-notLTE {x = x} {y = y} contra with (lteOrGte x y) 
+notLTE : DecTotOrd a => {x, y : a} -> Not (lte x y) -> lte y x
+notLTE {x = x} {y = y} contra with (connex x y) 
     | (Left ltexy) = absurd (contra ltexy)
     | (Right gtexy) = gtexy
 
@@ -67,61 +67,63 @@ data All : (a -> Type) -> List a -> Type where
     AllNil : All p []
     AllCons : p x -> All p xs -> All p (x::xs)
 
-allLTEtrans : LTE x y -> All (LTE y) ys -> All (LTE x) ys
+allLTEtrans : DecTotOrd a => {x, y : a} -> {ys : List a} -> lte x y -> All (lte y) ys -> All (lte x) ys
 allLTEtrans _ AllNil = AllNil
-allLTEtrans ltexy (AllCons py allys) = 
-    AllCons (lteTransitive ltexy py) (allLTEtrans ltexy allys)
-    
-allAppend : All p xs -> All p ys -> All p (xs ++ ys)
+allLTEtrans {x = x} ltexy (AllCons py allys) = 
+    AllCons (trans {x = x} ltexy py) (allLTEtrans ltexy allys)
+
+allAppend : DecTotOrd a => {xs, ys : List a} -> All p xs -> All p ys -> All p (xs ++ ys)
 allAppend AllNil pa = pa
 allAppend (AllCons px allx) ally = 
     AllCons px (allAppend allx ally)
-
-allPerm : All p xs -> Permutation xs ys -> All p ys
+ 
+allPerm : DecTotOrd a => {xs, ys : List a} -> All p xs -> Permutation xs ys -> All p ys
 allPerm _ PermNil = AllNil
 allPerm (AllCons p1 all) (PermCons p2) = AllCons p1 (allPerm all p2)
 allPerm (AllCons p1 (AllCons p2 all)) PermSwap = (AllCons p2 (AllCons p1 all))
 allPerm allxs (PermTrans p1 p2) = allPerm (allPerm allxs p1) p2
-    
-data Ordered : List Nat -> Type where
+ 
+data Ordered : List a -> Type where
     OrdNil : Ordered []
-    OrdCons : Ordered xs -> All (\x => y `LTE` x) xs -> Ordered (y::xs)
+    OrdCons : DecTotOrd a => {xs : List a} -> {y : a} -> Ordered xs -> All (\x => y `lte` x) xs -> Ordered (y::xs)
 
-orderedSingle : Ordered [x]
+orderedSingle : DecTotOrd a => {x : a} -> Ordered [x]
 orderedSingle = OrdCons OrdNil AllNil
 
-mergeLemma : All (LTE x) xs -> All (LTE y) ys -> LTE x y -> Permutation (xs ++ y::ys) zs ->
-     All (LTE x) zs
+mergeLemma : DecTotOrd a => {x, y : a} -> {xs, ys, zs : List a} -> All (lte x) xs -> All (lte y) ys -> lte x y -> Permutation (xs ++ y::ys) zs ->
+        All (lte x) zs
 mergeLemma xsltex ysltey ltexy p =
     let ysltex = allLTEtrans ltexy ysltey in
     let yssltex = AllCons ltexy ysltex in
     allPerm (allAppend xsltex yssltex) p
 
-merge : (xs : List Nat) -> Ordered xs -> (ys : List Nat) -> Ordered ys -> 
-    (zs : List Nat ** (Ordered zs, Permutation (xs ++ ys) zs))
+merge : DecTotOrd a => (xs : List a) -> Ordered xs -> (ys : List a) -> Ordered ys -> 
+    (zs : List a ** (Ordered zs, Permutation (xs ++ ys) zs))
 merge [] _ ys ordys = 
     (ys ** (ordys, permRefl))
 merge xs ordxs [] _ = 
     rewrite appendNilRightNeutral xs in
     (xs ** (ordxs, permRefl))
-merge (x::xs) (OrdCons ordxs p1) (y::ys) (OrdCons ordys p2) with (isLTE x y)
+merge (x::xs) (OrdCons ordxs p1) (y::ys) (OrdCons ordys p2) with (decLTE x y)
     | Yes ltexy =
         let (zs ** (ordzs, permzs)) = (merge xs ordxs (y::ys) (OrdCons ordys p2)) in
-        let ordxzs = OrdCons ordzs (mergeLemma p1 p2 ltexy permzs) in
-        (x::zs ** (ordxzs, PermCons permzs)) 
+        let ordxzs = OrdCons ordzs (mergeLemma ?u1 p2 ltexy permzs) in -- ?u1 should be p1 but causes contraint mismatch
+        (x::zs ** (ordxzs, PermCons permzs))  
     | No contra = 
-        let (zs ** (ordzs, permzs)) = merge (x::xs) (OrdCons ordxs p1) ys ordys in
-        let ordyzs = OrdCons ordzs (mergeLemma p2 p1 (notLTE contra) (PermTrans permAppComm permzs)) in
-        let tmp = PermCons (PermTrans permAppComm permzs) in
-        let permyzs = PermTrans (permAppComm {xs = (x::xs)}) tmp in
+        let (zs ** (ordzs, permzs)) = merge (x::xs) (OrdCons ordxs ?u2) ys ordys in -- ?u2 should be p1 but causes contraint mismatch
+        let lteyx = notLTE {x = x} contra in
+        let tmp1 = PermTrans (permAppComm {xs = ys}) permzs in
+        let ordyzs = OrdCons ordzs (mergeLemma p2 ?u3 lteyx tmp1) in -- ?u3 should be p1 but causes contraint mismatch
+        let tmp2 = (PermCons (PermTrans (permAppComm {xs = ys}) permzs)) in
+        let permyzs = PermTrans (permAppComm {xs = (x::xs)}) tmp2 in
         (y::zs ** (ordyzs, permyzs))
-
-mergeSortLemma : Permutation xs1 xs -> Permutation ys1 ys -> 
+        
+mergeSortLemma : DecTotOrd a => {xs1, xs, ys1, ys, zs : List a} -> Permutation xs1 xs -> Permutation ys1 ys -> 
     Permutation (xs ++ ys) zs -> Permutation (xs1 ++ ys1) zs
 mergeSortLemma p1 p2 p = 
     PermTrans (permAppFront p2) (PermTrans (permAppBack p1) p)
 
-mergeSort : (xs : List Nat) -> (ys : List Nat ** (Ordered ys, Permutation xs ys))
+mergeSort : DecTotOrd a => (xs : List a) -> (ys : List a ** (Ordered ys, Permutation xs ys))
 mergeSort xs with (V.splitRec xs)
     mergeSort [] | SplitRecNil = ([] ** (OrdNil, permRefl))
     mergeSort [x] | SplitRecOne = ([x] ** (orderedSingle, permRefl))
